@@ -37,35 +37,27 @@ BASE_DIR = Path(__file__).parent
 
 
 # =====================================================================
-# 1. 구글 뉴스 수집
+# 1. 뉴스 수집
 # =====================================================================
-def fetch_google_news(query: str, days: int) -> list[dict]:
+def fetch_feed(url: str, label: str) -> list[dict]:
     """
-    구글 뉴스에서 검색어로 기사를 가져온다.
+    RSS 주소에서 기사를 가져온다. (구글 뉴스 검색 결과 / 섹션 피드 공통)
 
-    query : 검색어 (config.py 에 적은 것)
-    days  : 최근 며칠 치를 검색할지 (구글 뉴스의 when:Nd 옵션)
+    구글이 보내준 순서를 그대로 유지한다.
+    검색·섹션 피드 모두 구글이 중요하다고 판단한 기사를 앞에 놓기 때문에,
+    이 순서 자체가 '주요 뉴스' 정보가 된다.
 
-    반환값: [{"title", "link", "source", "when"}, ...]
+    반환값: [{"title", "link", "source", "when", "order"}, ...]
+            order = 구글이 매긴 순위 (0이 가장 위)
     """
-    # 구글 뉴스는 검색 결과를 RSS 로도 제공한다.
-    # hl/gl/ceid 는 한국어·한국 지역 뉴스를 받기 위한 옵션.
-    url = (
-        "https://news.google.com/rss/search?q="
-        + quote(f"{query} when:{days}d")
-        + "&hl=ko&gl=KR&ceid=KR:ko"
-    )
-
-    # 네트워크 오류가 나도 전체가 멈추지 않도록 try 로 감싼다.
     try:
         feed = feedparser.parse(url, agent=USER_AGENT)
     except Exception as e:
-        print(f"[실패] {query}: {e}")
+        print(f"[실패] {label}: {e}")
         return []
 
     articles = []
-    for entry in feed.entries:
-        # 발행 시각이 없는 기사는 정렬·필터가 불가능하니 건너뛴다.
+    for order, entry in enumerate(feed.entries):
         published = entry.get("published_parsed")
         if not published:
             continue
@@ -77,27 +69,86 @@ def fetch_google_news(query: str, days: int) -> list[dict]:
         if source and title.endswith(f" - {source}"):
             title = title[: -len(source) - 3]
 
-        # published_parsed 는 UTC 기준 → 한국 시간으로 변환
-        when = datetime(*published[:6], tzinfo=timezone.utc).astimezone(KST)
-
         articles.append({
             "title": title,
             "link": entry.get("link", ""),
             "source": source,
-            "when": when,
+            "when": datetime(*published[:6], tzinfo=timezone.utc).astimezone(KST),
+            "order": order,
         })
 
-    # GitHub Actions 로그에서 수집 상황을 확인할 수 있도록 출력
-    print(f"[수집] {len(articles):3d}건  {query}")
+    print(f"[수집] {len(articles):3d}건  {label}")
     return articles
 
 
+def search_url(query: str, days: int) -> str:
+    """키워드 검색 RSS 주소를 만든다."""
+    return ("https://news.google.com/rss/search?q="
+            + quote(f"{query} when:{days}d")
+            + "&hl=ko&gl=KR&ceid=KR:ko")
+
+
+def topic_url(browser_url: str) -> str:
+    """
+    구글 뉴스 섹션 주소를 RSS 주소로 바꾼다.
+    브라우저 주소:  https://news.google.com/topics/CAAq....?hl=ko...
+    RSS 주소:      https://news.google.com/rss/topics/CAAq....?hl=ko&gl=KR&ceid=KR:ko
+    """
+    topic_id = browser_url.split("/topics/")[1].split("?")[0].split("/")[0]
+    return (f"https://news.google.com/rss/topics/{topic_id}"
+            "?hl=ko&gl=KR&ceid=KR:ko")
+
+
+# ---------------------------------------------------------------------
+# 비슷한 기사 묶기 (보도량 = 화제성의 대용 지표)
+# ---------------------------------------------------------------------
+# 제목 비교에서 무시할 단어 (기사 성격을 나타내는 말들)
+STOPWORDS = {"속보", "단독", "종합", "포토", "영상", "사진", "그래픽", "뉴스",
+             "기자", "오늘", "내일", "일보", "인터뷰", "칼럼", "사설"}
+
+# 두 기사를 같은 사건으로 볼 기준 (0~1, 높을수록 깐깐하게 묶음)
+CLUSTER_THRESHOLD = 0.4
+
+
+def title_tokens(title: str) -> set:
+    """제목에서 두 글자 이상 단어만 뽑는다. (조사·기호는 자연히 걸러짐)"""
+    words = re.findall(r"[가-힣A-Za-z0-9]{2,}", title)
+    return {w for w in words if w not in STOPWORDS}
+
+
+def cluster_articles(articles: list[dict]) -> list[dict]:
+    """
+    제목이 비슷한 기사끼리 묶는다.
+    같은 사건을 여러 언론사가 보도했다면 그만큼 중요한 뉴스로 본다.
+
+    반환값: [{"items": [기사, ...], "tokens": {단어, ...}}, ...]
+    """
+    clusters = []
+
+    for a in articles:
+        tokens = title_tokens(a["title"])
+        if not tokens:
+            continue
+
+        # 기존 묶음 중 가장 비슷한 것을 찾는다.
+        # 공통 단어 수 ÷ 더 짧은 쪽 단어 수 → 제목 길이가 달라도 비교 가능
+        best, best_score = None, 0.0
+        for c in clusters:
+            common = len(tokens & c["tokens"])
+            score = common / min(len(tokens), len(c["tokens"]))
+            if score > best_score:
+                best, best_score = c, score
+
+        if best and best_score >= CLUSTER_THRESHOLD:
+            best["items"].append(a)
+        else:
+            clusters.append({"items": [a], "tokens": tokens})
+
+    return clusters
+
+
 def normalize(title: str) -> str:
-    """
-    중복 판별용 키를 만든다.
-    특수문자·공백을 지우고 앞 30글자만 비교해서,
-    언론사만 다르고 제목이 거의 같은 기사를 같은 기사로 본다.
-    """
+    """중복 판별용 키. 특수문자·공백을 지우고 앞 30글자만 비교한다."""
     return re.sub(r"[\W_]+", "", title.lower())[:30]
 
 
@@ -106,43 +157,64 @@ def normalize(title: str) -> str:
 # =====================================================================
 def build_news_cards() -> list[dict]:
     """
-    config.NEWS 의 카드마다 기사를 모아 정리한다.
+    config.NEWS 의 카드마다 기사를 모아 정렬한다.
+
+    정렬 방식(rank)
+      "top"     : 구글이 매긴 순서 그대로 (섹션 피드에 적합)
+      "cluster" : 여러 언론사가 다룬 기사를 위로 (검색 결과에 적합)
+      "recent"  : 최신순
 
     반환값: [{"title": 카드제목, "items": [기사, ...]}, ...]
     """
-    cutoff = NOW - timedelta(hours=config.NEWS_HOURS)  # 이 시각 이전 기사는 버림
-
-    # seen: 이미 다른 카드(또는 같은 카드)에 나온 기사 키 모음
-    #       → 경제 카드와 정치 카드에 같은 기사가 두 번 나오지 않게 함
-    seen = set()
+    cutoff = NOW - timedelta(hours=config.NEWS_HOURS)
+    seen = set()          # 카드 간 중복 방지
     cards = []
 
     for card in config.NEWS:
-        # 최신 기사가 위로 오도록 시간 역순 정렬
-        # (검색 기간은 2일로 넉넉히 잡고, 아래에서 NEWS_HOURS 로 다시 자름)
-        articles = sorted(
-            fetch_google_news(card["query"], days=2),
-            key=lambda a: a["when"],
-            reverse=True,
-        )
+        # --- (1) 가져오기: 섹션 주소가 있으면 섹션, 없으면 키워드 검색 ---
+        if card.get("topic_url"):
+            url, label = topic_url(card["topic_url"]), f'{card["title"]} (섹션)'
+        else:
+            url, label = search_url(card["query"], days=2), card["query"]
+        articles = fetch_feed(url, label)
 
+        # --- (2) 기간·제외 단어로 걸러내기 ---
+        kept = [
+            a for a in articles
+            if a["when"] >= cutoff
+            and not any(w in a["title"] for w in card["exclude"])
+        ]
+
+        # --- (3) 정렬 ---
+        rank = card.get("rank", "cluster")
+
+        if rank == "cluster":
+            clusters = cluster_articles(kept)
+            # 보도량 많은 순 → 같으면 최신순
+            clusters.sort(key=lambda c: (-len(c["items"]),
+                                         -max(x["when"].timestamp() for x in c["items"])))
+            ordered = []
+            for c in clusters:
+                # 묶음 안에서는 가장 최신 기사를 대표로 보여준다.
+                rep = max(c["items"], key=lambda x: x["when"])
+                count = len(c["items"])
+                if count > 1:
+                    # 몇 곳에서 보도했는지 표시 (화면의 회색 글씨 부분)
+                    rep = dict(rep, source=f'{rep["source"]} 외 {count - 1}곳')
+                ordered.append(rep)
+        elif rank == "recent":
+            ordered = sorted(kept, key=lambda a: a["when"], reverse=True)
+        else:  # "top" : 구글이 준 순서 유지
+            ordered = sorted(kept, key=lambda a: a["order"])
+
+        # --- (4) 중복 제거 후 개수 제한 ---
         picked = []
-        for a in articles:
-            # (1) 기간 밖이면 제외
-            if a["when"] < cutoff:
-                continue
-            # (2) 제외 단어가 제목에 있으면 제외
-            if any(word in a["title"] for word in card["exclude"]):
-                continue
-            # (3) 이미 나온 기사면 제외
+        for a in ordered:
             key = normalize(a["title"])
             if key in seen:
                 continue
-
             seen.add(key)
             picked.append(a)
-
-            # 최대 개수를 채우면 이 카드는 끝
             if len(picked) >= config.NEWS_MAX:
                 break
 
@@ -154,9 +226,6 @@ def build_news_cards() -> list[dict]:
 # =====================================================================
 # 3. 야구 경기 결과 만들기
 # =====================================================================
-# 제목에 점수가 있는지 찾는 패턴:  "5-3", "5:3", "5대3" 등
-SCORE_PATTERN = re.compile(r"\d{1,2}\s*[-:대]\s*\d{1,2}")
-
 # 경기 결과 기사로 볼 만한 단어들
 # (점수가 없어도 이런 단어가 있으면 결과 기사로 판단)
 RESULT_PATTERN = re.compile(
@@ -175,12 +244,12 @@ def build_baseball() -> list[dict]:
 
     for team in config.BASEBALL:
         articles = sorted(
-            fetch_google_news(team["query"], days=config.BASEBALL_DAYS),
+            fetch_feed(search_url(team["query"], days=config.BASEBALL_DAYS), team["title"]),
             key=lambda a: a["when"],
             reverse=True,
         )
 
-        # 날짜 → 기사 (같은 날 기사가 여러 개면 가장 최신 1건만 남김)
+        # 날짜 → 기사 (기사가 최신순이므로 날짜별 첫 기사만 남는다)
         by_date = {}
 
         for a in articles:
@@ -202,16 +271,14 @@ def build_baseball() -> list[dict]:
             if not RESULT_PATTERN.search(title):
                 continue
 
-            # 기사가 최신순으로 정렬돼 있으니, 날짜별 첫 기사만 저장
             date = a["when"].date()
             if date not in by_date:
                 by_date[date] = a
 
         # 최신 날짜부터 N경기만 남긴다.
         recent_dates = sorted(by_date.keys(), reverse=True)[: config.BASEBALL_GAMES]
-        items = [by_date[d] for d in recent_dates]
-
-        teams.append({"title": team["title"], "items": items})
+        teams.append({"title": team["title"],
+                      "items": [by_date[d] for d in recent_dates]})
 
     return teams
 
@@ -234,14 +301,10 @@ def time_ago(when: datetime) -> str:
     return f"{when.month}/{when.day}"
 
 
-def news_item_html(a: dict, hidden: bool) -> str:
-    """
-    뉴스 카드의 기사 한 줄.
-    hidden=True 이면 '더보기'를 눌러야 보이는 기사 (class="more").
-    """
-    cls = ' class="more"' if hidden else ""
+def news_item_html(a: dict) -> str:
+    """뉴스 카드의 기사 한 줄. (칸을 넘치는 기사는 카드 안에서 스크롤)"""
     return (
-        f'<li{cls}>'
+        f'<li>'
         f'<a href="{esc(a["link"])}" target="_blank" rel="noopener" title="{esc(a["title"])}">'
         f'{esc(a["title"])}</a>'
         f'<span class="meta">{esc(a["source"])} · {time_ago(a["when"])}</span>'
@@ -264,22 +327,10 @@ def render(cards: list[dict], teams: list[dict]) -> str:
 
     # --- 뉴스 카드 5개 ---
     for card in cards:
-        items = card["items"]
-        if items:
-            rows = "".join(
-                news_item_html(a, hidden=(i >= config.NEWS_COUNT))
-                for i, a in enumerate(items)
-            )
-        else:
-            rows = '<li class="empty">최근 24시간 동안 새 기사가 없습니다.</li>'
-
-        # 기본 개수보다 기사가 많을 때만 '더보기' 버튼 표시
-        extra = len(items) - config.NEWS_COUNT
-        more_btn = f'<button class="more-btn">더보기 {extra}</button>' if extra > 0 else ""
-
+        rows = "".join(news_item_html(a) for a in card["items"]) \
+            or '<li class="empty">최근 24시간 동안 새 기사가 없습니다.</li>'
         blocks.append(
-            f'<section class="card"><h2>{esc(card["title"])}</h2>'
-            f'<ul>{rows}</ul>{more_btn}</section>'
+            f'<section class="card"><h2>{esc(card["title"])}</h2><ul>{rows}</ul></section>'
         )
 
     # --- 6번째 칸: 야구 (위/아래 반씩) ---

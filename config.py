@@ -35,7 +35,7 @@ NEWS = [
     },
     {
         "title": "광고 산업",
-        "query": '광고대행사 OR 광고업계 OR 광고시장 OR 애드테크 OR 제일기획 OR 이노션 OR "오리콤" OR "한컴" OR "디지털 광고"',
+        "query": '광고대행사 OR 광고업계 OR 광고시장 OR 애드테크 OR 제일기획 OR 이노션 OR "오리콤" OR "디지털 광고"',
         "exclude": [],
     },
     {

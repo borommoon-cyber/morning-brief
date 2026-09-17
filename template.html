@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  template.html ― 화면 틀
+  news.py 가 아래 {{...}} 자리를 실제 내용으로 바꿔서 docs/index.html 을 만든다.
+    {{DATE}}    : 날짜 (예: 9월 17일 (목))
+    {{UPDATED}} : 갱신 시각
+    {{CARDS}}   : 카드 6개
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아침 브리핑 · {{DATE}}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☕</text></svg>">
+<!-- 한글 웹폰트 (불러오기 실패 시 시스템 기본 한글 폰트 사용) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<style>
+/* ── 색상: 여기만 바꾸면 전체 색이 바뀜 ── */
+:root{--bg:#EDF0F4;--paper:#FFFFFF;--ink:#18202B;--sub:#5E6A7A;--line:#D8DEE6;--accent:#2250D9}
+/* 기기가 다크모드면 자동으로 어두운 색 사용 */
+@media (prefers-color-scheme:dark){:root{--bg:#141A22;--paper:#1C2430;--ink:#E7ECF2;--sub:#95A1B2;--line:#2C3644;--accent:#7C9CFF}}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:Pretendard,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;line-height:1.45;-webkit-font-smoothing:antialiased}
+
+/* 전체 폭과 높이: 화면 높이에 맞춰 한 화면에 들어가게 */
+.wrap{max-width:1280px;margin:0 auto;padding:20px 24px;height:100vh;display:flex;flex-direction:column}
+header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+header h1{font-size:24px;font-weight:800;letter-spacing:-.02em}
+header span{color:var(--sub);font-size:13px}
+
+/* ── 6분할 격자: 3열 × 2줄, 모든 칸 같은 크기 ── */
+.grid{flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;min-height:0}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0;overflow:hidden;display:flex;flex-direction:column}
+/* 기사 목록이 칸보다 길면 목록만 잘리고, 더보기 버튼은 항상 아래에 보이게 */
+.card > ul{flex:1;min-height:0;overflow:hidden}
+h2{font-size:15px;font-weight:700;margin-bottom:6px}
+h2 small{font-size:12px;font-weight:400;color:var(--sub)}
+
+/* 기사 목록: 제목이 길면 한 줄에서 … 으로 자름 (마우스를 올리면 전체 제목) */
+ul{list-style:none}
+li{padding:5px 0;border-top:1px solid var(--line);min-width:0}
+li:first-child{border-top:0}
+li a{display:block;color:var(--ink);text-decoration:none;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+li a:hover{color:var(--accent)}
+li a:visited{color:var(--sub)}              /* 읽은 기사는 회색 */
+.meta{display:block;font-size:11.5px;color:var(--sub)}
+.empty{color:var(--sub);font-size:13px}
+
+/* ── 더보기: 숨겨진 기사(.more)는 카드가 열렸을 때만 보임 ── */
+.more{display:none}
+.card.open > ul{overflow:auto}
+.card.open .more{display:block}
+.more-btn{flex:none;align-self:flex-start;margin-top:4px;border:0;background:none;color:var(--accent);font:inherit;font-size:13px;cursor:pointer}
+
+/* ── 야구 칸: 위/아래 반씩 ── */
+.card.split{display:grid;grid-template-rows:repeat(2,minmax(0,1fr));padding:0}
+.half{padding:10px 14px;min-width:0;overflow:hidden}
+.half + .half{border-top:1px solid var(--line)}
+.games li{display:flex;gap:8px;align-items:baseline;padding:3px 0}
+.games em{flex:none;width:36px;font-style:normal;font-size:12px;color:var(--sub)}
+.games a{flex:1;min-width:0}
+
+/* 키보드로 이동할 때 위치가 보이도록 */
+a:focus-visible,.more-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ── 화면이 좁을 때: 태블릿 2열, 폰 1열 (스크롤 허용) ── */
+/* 화면 높이가 너무 낮거나 좁으면 한 화면 고정을 풀고 스크롤 */
+@media (max-height:700px),(max-width:1000px){.wrap{height:auto;min-height:100vh}.grid{grid-template-rows:none;grid-auto-rows:minmax(320px,auto)}}
+@media (max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none}}
+@media (max-width:640px){.grid{grid-template-columns:1fr}header{flex-direction:column;gap:2px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{DATE}} 아침 브리핑</h1>
+    <span>{{UPDATED}} 갱신</span>
+  </header>
+  <main class="grid">
+{{CARDS}}
+  </main>
+</div>
+<script>
+// '더보기' 버튼: 누르면 카드를 펼치고, 다시 누르면 접는다.
+document.querySelectorAll('.more-btn').forEach(function (btn) {
+  var label = btn.textContent;
+  btn.addEventListener('click', function () {
+    var card = btn.closest('.card');
+    card.classList.toggle('open');
+    btn.textContent = card.classList.contains('open') ? '접기' : label;
+  });
+});
+</script>
+</body>
+</html>

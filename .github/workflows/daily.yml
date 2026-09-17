@@ -1,0 +1,46 @@
+# =====================================================================
+# GitHub Actions 자동 실행 설정
+# ---------------------------------------------------------------------
+# 매일 정해진 시각에 GitHub 서버가 news.py 를 실행하고,
+# 새로 만든 docs/index.html 을 저장소에 커밋한다.
+# → GitHub Pages 가 그 파일을 웹페이지로 보여준다.
+# =====================================================================
+name: 아침 브리핑
+
+on:
+  schedule:
+    # cron 은 UTC 기준. 한국시간 = UTC + 9시간
+    # "5 23 * * *" = UTC 23:05 = 한국시간 08:05
+    # ※ GitHub 예약 실행은 수 분~수십 분 늦어질 수 있음
+    - cron: "5 23 * * *"
+  workflow_dispatch:      # Actions 탭의 'Run workflow' 버튼으로 수동 실행 가능
+
+permissions:
+  contents: write         # 결과 파일을 커밋하기 위한 쓰기 권한
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 1) 저장소 코드 내려받기
+      - uses: actions/checkout@v4
+
+      # 2) 파이썬 설치
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 3) 라이브러리 설치
+      - run: pip install -r requirements.txt
+
+      # 4) 브리핑 생성
+      - run: python news.py
+
+      # 5) 바뀐 결과만 커밋 (변경이 없으면 건너뜀)
+      - name: 결과 커밋
+        run: |
+          git config user.name "brief-bot"
+          git config user.email "brief-bot@users.noreply.github.com"
+          git add docs/index.html
+          git diff --staged --quiet || git commit -m "brief $(date -u +%F)"
+          git push

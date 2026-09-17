@@ -180,29 +180,36 @@ def build_baseball() -> list[dict]:
             reverse=True,
         )
 
-        # 날짜 → (기사, 점수포함여부)
-        # 같은 날 기사가 여러 개면 하나만 남긴다.
+        # 날짜 → 기사 (같은 날 기사가 여러 개면 가장 최신 1건만 남김)
         by_date = {}
 
         for a in articles:
-            # 팀 이름이 제목에 없으면 다른 팀 기사일 가능성이 높음
-            if team["must"] not in a["title"]:
-                continue
-            # 결과 기사가 아니면 (예: 선수 인터뷰, 트레이드 소식) 제외
-            if not RESULT_PATTERN.search(a["title"]):
+            title = a["title"]
+
+            # (1) 팀 이름이 제목에 없으면 다른 팀 기사일 가능성이 높음
+            if team["must"] not in title:
                 continue
 
+            # (2) must_any 단어 중 하나도 없으면 제외 (예: "승" 또는 "패")
+            if team.get("must_any") and not any(w in title for w in team["must_any"]):
+                continue
+
+            # (3) must_digit 패턴(점수)이 없으면 제외
+            if team.get("must_digit") and not re.search(team["must_digit"], title):
+                continue
+
+            # (4) 경기 결과 기사가 아니면 제외 (인터뷰, 트레이드 소식 등)
+            if not RESULT_PATTERN.search(title):
+                continue
+
+            # 기사가 최신순으로 정렬돼 있으니, 날짜별 첫 기사만 저장
             date = a["when"].date()
-            has_score = bool(SCORE_PATTERN.search(a["title"]))
+            if date not in by_date:
+                by_date[date] = a
 
-            # 그 날짜의 첫 기사이거나,
-            # 기존 기사에는 점수가 없는데 이번 기사에는 점수가 있으면 교체
-            if date not in by_date or (has_score and not by_date[date][1]):
-                by_date[date] = (a, has_score)
-
-        # 최신 날짜부터 정렬해서 N경기만 남긴다.
+        # 최신 날짜부터 N경기만 남긴다.
         recent_dates = sorted(by_date.keys(), reverse=True)[: config.BASEBALL_GAMES]
-        items = [by_date[d][0] for d in recent_dates]
+        items = [by_date[d] for d in recent_dates]
 
         teams.append({"title": team["title"], "items": items})
 
